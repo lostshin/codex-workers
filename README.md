@@ -1,21 +1,62 @@
 # Codex Workers
 
-Codex Workers 讓你在 Claude Code 或 Codex 中，把任務派給多個 Codex worker 同時執行。每個 worker 使用你自己的一個獨立登入帳號，並有獨立的 `CODEX_HOME`，所以登入、設定與對話紀錄不會在 worker 之間共用。
+> **在 Claude Code 或 Codex 裡說一句話，同時派出多個 Codex worker，每個都用你自己的獨立登入帳號。**
+>
+> **In English:** Codex Workers lets one main agent (Claude Code or Codex) dispatch tasks to several Codex CLI workers at once inside [Herdr](https://github.com/herdrdev/herdr) panes. Each worker runs under its own separately logged-in account and `CODEX_HOME`. Python 3.11 standard library only, MIT licensed, macOS tested. Docs are in Traditional Chinese; the worker language prompt is configurable via `CODEX_WORKERS_LANGUAGE_PROMPT`.
 
-它由兩部分組成：
-
-- **skill**（`codex-workers`）：讓主 agent（Claude Code 或 Codex）知道派工流程。你在主 agent 中呼叫它派工、追蹤與收取結果。
-- **CLI**（`codex-workers` 命令）：skill 透過它操作 [Herdr](https://github.com/herdrdev/herdr) 的 pane 與 worker。skill 無法獨立運作，所以兩者都要安裝。
-
-CLI 只使用 Python 3.11 標準函式庫。
-
-> **English summary:** A CLI + agent skill that lets one main agent (Claude Code or Codex) dispatch tasks to multiple Codex CLI workers inside Herdr panes, each running under its own separately logged-in account and `CODEX_HOME`. macOS only (tested). Docs are in Traditional Chinese; the worker language prompt is configurable via `CODEX_WORKERS_LANGUAGE_PROMPT`.
-
-## 介紹影片
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg) ![macOS tested](https://img.shields.io/badge/platform-macOS%20tested-lightgrey.svg)
 
 ![介紹影片：一個主 agent 指揮多個隔離帳號的 Codex worker](docs/intro.gif)
 
 完整影片（畫質較好）：[docs/intro.mp4](docs/intro.mp4)。
+
+## 為什麼需要它
+
+同時開幾個 Codex、又要分開個人與工作帳號時，你得自己切換登入、開 pane、記住哪個 pane 在做哪件事，還要輪流查看誰做完了。Codex Workers 把這些交給主 agent：
+
+- **平行處理**：一次派出多個 worker，各自在 Herdr 的 pane 中執行。
+- **帳號分開**：每個 worker 綁一個你自己的登入帳號，登入、設定與對話紀錄互不共用。
+- **你保有控制權**：每輪完成後，由你決定保留、壓縮或關閉 worker。
+
+## 一句話派工
+
+在主 agent 裡這樣說（`work`、`personal` 是你自己取的帳號別名）：
+
+```text
+/codex-workers 用 work 帳號審查 src/，同時用 personal 帳號整理文件。兩邊都不要修改檔案。
+```
+
+主 agent 會建立兩個 worker、追蹤進度，完成後讀取成果，再問你下一步。
+
+## 特色
+
+| 特色 | 說明 |
+|---|---|
+| 帳號隔離 | 每個 worker 有獨立的 `CODEX_HOME`，不共用登入、歷史或連線。 |
+| 不碰主登入 | 不讀取或複製你主 Codex 的登入檔，不切換主登入，不重啟共享 daemon。 |
+| 失敗時停下來 | 授權失敗就停止，不會回落到主帳號、其他帳號或環境中的 API key。送出結果不明時標記為 unknown，不自動重送。 |
+| 沒有第三方依賴 | CLI 只使用 Python 3.11 標準函式庫。 |
+| 有測試 | 附 E2E 模擬測試套件，也以真實的 Herdr 與自己的帳號驗證過派工。 |
+| 預設繁體中文 | worker 預設用台灣繁體中文回報，可用環境變數改成其他語言。 |
+
+## 三步開始
+
+```sh
+git clone https://github.com/lostshin/codex-workers && cd codex-workers
+python3 install.py --claude          # 使用 Codex 時省略 --claude
+codex-workers account add <別名>     # 每個帳號登入一次
+```
+
+需要先安裝 Codex CLI 與 Herdr，見[需求](#需求)與[安裝](#安裝)。
+
+如果 Codex Workers 對你有幫助，歡迎在 GitHub 按個 Star，讓更多人看到。遇到問題或有想法，請到 [Issues](https://github.com/lostshin/codex-workers/issues) 回報。
+
+## 組成
+
+它由兩部分組成：
+
+- **skill**（`codex-workers`）：讓主 agent（Claude Code 或 Codex）知道派工流程。你在主 agent 中呼叫它派工、追蹤與收取結果。
+- **CLI**（`codex-workers` 命令）：skill 透過它操作 Herdr 的 pane 與 worker。skill 無法獨立運作，所以兩者都要安裝。
 
 ## 基本概念
 
