@@ -1,0 +1,3 @@
+interface:
+  display_name: "Codex Workers"
+  short_description: "在 Herdr 中以多個獨立登入的 Codex 帳號派工與整合"

@@ -1,0 +1,9 @@
+# Local verification output and personal notes
+evidence/
+.private/
+
+# Backups and caches
+*.bak*
+__pycache__/
+*.pyc
+.DS_Store
