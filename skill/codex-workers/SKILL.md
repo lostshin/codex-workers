@@ -11,6 +11,30 @@ description: 由單一主 agent 指揮不同帳號的 Codex worker，在 Herdr �
 
 上述語言、命名與完成後選擇由本 skill 與 Codex Workers CLI 管理，不需要修改 Herdr skill。本流程的派工與追加任務，包括 worker 彼此交接，都使用 `codex-workers start`／`prompt`；不要直接用 `herdr agent prompt` 繞過語言設定與狀態核對。Herdr skill 可供查閱底層操作，但其中的一般命名或範例不取代本流程規則。完成提問與 `finish` 由主 agent 收取成果後處理，worker 不自行壓縮或關閉 pane。
 
+## 前置檢查
+
+第一次派工前，以及 CLI 或 Herdr 狀態可能改變時，先用唯讀指令確認必要工具：
+
+```sh
+command -v codex-workers >/dev/null && echo "codex-workers: ok" || echo "codex-workers: missing"
+python3 -c 'import sys; print("python3:", "ok" if sys.version_info >= (3, 11) else "too old")'
+command -v codex >/dev/null && codex --help 2>&1 | grep -q -- '--no-daemon' && echo "codex: ok" || echo "codex: missing or unsupported"
+command -v herdr >/dev/null && echo "herdr: ok" || echo "herdr: missing"
+[ "$HERDR_ENV" = 1 ] && [ -n "$HERDR_PANE_ID" ] && echo "herdr pane: ok" || echo "herdr pane: not detected"
+```
+
+任一項不是 `ok`，就停止派工，告訴使用者缺少什麼，並依 [references/setup.md](references/setup.md) 引導安裝。安裝屬於系統變更：先列出將執行的指令，取得使用者同意後再執行，或請使用者自己執行。不要自行選擇安裝來源以外的套件。
+
+| 缺少項目 | 引導 |
+|---|---|
+| `codex-workers` | 到 Codex Workers 專案目錄執行 `python3 install.py`（Claude Code 加 `--claude`），再執行 `codex-workers --help`。 |
+| `python3` 3.11 以下 | 安裝 Python 3.11 以上版本，並確認 `python3` 指向它。 |
+| `codex` 或不支援 `--no-daemon` | 安裝 Codex CLI，見 setup.md 的安裝方式。 |
+| `herdr` | 安裝 Herdr，見 setup.md 的安裝方式；安裝後在終端機執行 `herdr`。 |
+| `herdr pane` 未偵測到 | 在 Herdr 的 pane 中啟動主 agent。不可手動設定 `HERDR_ENV` 或 `HERDR_PANE_ID`。 |
+
+全部 `ok` 之後，才進入下一節。
+
 ## 確認帳號與環境
 
 - 先執行 `codex-workers account list --json`，使用回傳的帳號別名。**別名由使用者自訂**：新增帳號時請使用者決定別名（例如 `work`、`personal`），agent 不代取、不沿用範例名稱，也不另取 alpha／beta 等別名。別名須小寫英文字母開頭、最多 32 字元，可含數字、`_`、`-`。

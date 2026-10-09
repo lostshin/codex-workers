@@ -4,7 +4,24 @@
 
 ## CLI 與 skill
 
-需要 Python 3.11+、支援 `--no-daemon` 的 Codex，以及支援 `pane split --env` 的 Herdr。在 Codex Workers 專案執行 `python3 install.py`（Claude Code 使用者加 `--claude`），再用 `codex-workers --help` 驗證；`~/.local/bin` 須在 PATH 中。安裝程式不覆寫其他工具的既有檔案。
+需要 Python 3.11+、支援 `--no-daemon` 的 Codex，以及支援 `pane split --env` 的 Herdr（實測 Codex 0.162.0、Herdr 0.9.3）。
+
+依序安裝，每一項都可以先用 `command -v` 確認：
+
+1. **Python 3.11 以上**：`python3 --version` 必須顯示 3.11 以上。
+2. **Codex CLI**（擇一）：
+   - `brew install --cask codex`
+   - `npm install -g @openai/codex`
+   - `curl -fsSL https://chatgpt.com/codex/install.sh | sh`
+3. **Herdr**（擇一）：
+   - `brew install herdr`
+   - `curl -fsSL https://herdr.dev/install.sh | sh`
+   - `mise use -g herdr`
+   
+   安裝後在終端機執行 `herdr` 啟動，再在其中的 pane 啟動主 agent。
+4. **Codex Workers 的 CLI 與 skill**：在 Codex Workers 專案目錄執行 `python3 install.py`（Claude Code 使用者加 `--claude`），再用 `codex-workers --help` 驗證；`~/.local/bin` 須在 PATH 中。
+
+安裝程式不覆寫其他工具的既有檔案。
 
 `install.py` 建立指向專案的連結：`~/.local/bin/codex-workers`、`~/.codex/skills/codex-workers`，加 `--claude` 時另有 `~/.claude/skills/codex-workers`。保留專案位置；移動專案需要重新安裝連結。若 skill 目錄已被其他工具管理（不是指向本專案的連結），安裝程式會拒絕覆寫；此時修改專案的 `skill/codex-workers/` 後，要自行把改動同步到該工具管理的副本。新 session 才能保證使用更新後的 skill 描述；既有 session 可直接讀取安裝路徑的 `SKILL.md`。
 

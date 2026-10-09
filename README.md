@@ -1,8 +1,15 @@
 # Codex Workers
 
-Codex Workers 讓一個主 agent（Claude Code 或 Codex）透過 [Herdr](https://github.com/herdrdev/herdr) 同時指揮多個 Codex worker。每個 worker 使用你自己的一個獨立登入帳號，並有獨立的 `CODEX_HOME`，所以登入、設定與對話紀錄不會在 worker 之間共用。CLI 只使用 Python 3.11 標準函式庫。
+Codex Workers 讓你在 Claude Code 或 Codex 中，把任務派給多個 Codex worker 同時執行。每個 worker 使用你自己的一個獨立登入帳號，並有獨立的 `CODEX_HOME`，所以登入、設定與對話紀錄不會在 worker 之間共用。
 
-> **English summary:** A CLI + agent skill that lets one main agent dispatch tasks to multiple Codex CLI workers inside Herdr panes, each running under its own separately logged-in account and `CODEX_HOME`. macOS only (tested). Docs are in Traditional Chinese; the worker language prompt is configurable via `CODEX_WORKERS_LANGUAGE_PROMPT`.
+它由兩部分組成：
+
+- **skill**（`codex-workers`）：讓主 agent（Claude Code 或 Codex）知道派工流程。你在主 agent 中呼叫它派工、追蹤與收取結果。
+- **CLI**（`codex-workers` 命令）：skill 透過它操作 [Herdr](https://github.com/herdrdev/herdr) 的 pane 與 worker。skill 無法獨立運作，所以兩者都要安裝。
+
+CLI 只使用 Python 3.11 標準函式庫。
+
+> **English summary:** A CLI + agent skill that lets one main agent (Claude Code or Codex) dispatch tasks to multiple Codex CLI workers inside Herdr panes, each running under its own separately logged-in account and `CODEX_HOME`. macOS only (tested). Docs are in Traditional Chinese; the worker language prompt is configurable via `CODEX_WORKERS_LANGUAGE_PROMPT`.
 
 ## 介紹影片
 
@@ -14,7 +21,8 @@ Codex Workers 讓一個主 agent（Claude Code 或 Codex）透過 [Herdr](https:
 
 | 名詞 | 意思 |
 |---|---|
-| 主 agent | 你正在使用的 Claude Code 或 Codex。它負責派工、等待結果與收取成果。 |
+| 主 agent | 你正在使用的 Claude Code 或 Codex。它呼叫 skill，負責派工、等待結果與收取成果。 |
+| skill | 安裝在 `~/.codex/skills/` 或 `~/.claude/skills/` 的派工流程說明。主 agent 依它操作 CLI。 |
 | worker | 由工具在 Herdr pane 中啟動的 Codex，負責執行一個任務。 |
 | 帳號別名 | 你為登入帳號取的名字，例如 `work`。由你自己決定。 |
 | worker 名稱 | 派工時使用的名字，必須是「帳號別名」或「帳號別名-用途」，例如 `work-review`。 |
@@ -40,50 +48,103 @@ Codex Workers 讓一個主 agent（Claude Code 或 Codex）透過 [Herdr](https:
 | 帳號 | 每個 worker 帳號都必須是你自己的 ChatGPT 帳號，且方案包含 Codex。每個帳號都要登入一次。 |
 | PATH | `~/.local/bin` 在 PATH 中 |
 
+### 安裝必要工具
+
+依序安裝，每一項擇一即可：
+
+```sh
+brew install --cask codex          # Codex CLI，或 npm install -g @openai/codex
+brew install herdr                 # Herdr，或 curl -fsSL https://herdr.dev/install.sh | sh
+```
+
+安裝 Herdr 後，在終端機執行 `herdr` 啟動，再在其中的 pane 啟動 Claude Code 或 Codex 作為主 agent。
+
+skill 在派工前會自動檢查上述工具。缺少時，它會列出缺少的項目與對應的安裝指令，不會自行安裝。完整的安裝方式見 [skill/codex-workers/references/setup.md](skill/codex-workers/references/setup.md)。
+
 ## 安裝
+
+安裝會同時安裝 CLI 與 skill：
 
 ```sh
 git clone https://github.com/lostshin/codex-workers
 cd codex-workers
-python3 install.py            # 使用 Codex 時
-python3 install.py --claude   # 使用 Claude Code 時，另外連結到 ~/.claude/skills
-codex-workers --help
+python3 install.py            # 使用 Codex
+python3 install.py --claude   # 使用 Claude Code（同時也安裝 Codex 的 skill）
+codex-workers --help          # 確認 CLI 可以執行
 ```
 
-`install.py` 會建立 `codex-workers` 命令與 skill 的連結，指向本專案。若目標位置已有其他檔案，安裝會停止並列出路徑，不會覆寫。移動專案後需要重新執行安裝。
+安裝程式建立以下連結，都指向本專案：
 
-## 快速開始
-
-以下假設主 agent 已在 Herdr pane 中啟動。範例中的 `work` 與 `personal` 是示意名稱，請換成你自己的別名。
-
-### 1. 新增帳號
-
-每個帳號執行一次：
-
-```sh
-codex-workers account add <別名>
-```
-
-`<別名>` 是你為這個帳號取的名字，格式為小寫英文字母開頭、最多 32 字元，可含數字、`_`、`-`。指令會顯示網址與一次性代碼。請在瀏覽器開啟網址、輸入代碼，並登入要加入的帳號。建議使用無痕視窗，以免誤用其他已登入的帳號。
-
-工具不會讀取或複製你主 Codex 的登入檔。
-
-### 2. 確認帳號
-
-```sh
-codex-workers account list --json
-```
-
-輸出中的 `login_file` 欄位表示登入檔狀態：
-
-| 值 | 意思 |
+| 連結位置 | 內容 |
 |---|---|
-| `present_unverified` | 登入檔存在。這只代表檔案存在，不代表授權仍然有效。實際派工成功，才能證明授權可用。 |
-| `missing` | 沒有登入檔。請執行 `account add`。 |
-| `invalid_file` | 登入檔是空的或不是一般檔案。 |
-| `linked_file_rejected` | 登入檔是符號連結，工具拒絕使用。 |
+| `~/.local/bin/codex-workers` | CLI 命令 |
+| `~/.codex/skills/codex-workers` | Codex 的 skill |
+| `~/.claude/skills/codex-workers` | Claude Code 的 skill，只有加上 `--claude` 才會建立 |
 
-### 3. 派工並收取結果
+注意事項：
+
+- 安裝程式不覆寫既有檔案。若目標位置已有其他工具管理的 skill，安裝會停止並列出路徑。
+- 移動專案後，需要重新執行安裝。
+- 安裝或更新 skill 後，請開新的 session，確保主 agent 讀到最新的 skill 內容。
+
+## 在 Claude Code 或 Codex 中使用
+
+### 1. 準備
+
+1. 在 Herdr pane 中啟動主 agent（Claude Code 或 Codex）。主 agent 必須在 Herdr 內執行，否則 CLI 無法控制 pane。
+2. 新增要使用的帳號。每個帳號只需要做一次。別名由你自己取，格式為小寫英文字母開頭、最多 32 字元，可含數字、`_`、`-`。
+   - **Claude Code：** 在輸入框輸入 `! codex-workers account add <別名>`。`!` 會在目前的 session 中執行這個命令，畫面的網址與代碼會直接顯示在對話中。
+   - **Codex 或一般終端機：** 執行 `codex-workers account add <別名>`。
+   - 在瀏覽器開啟畫面上的網址、輸入一次性代碼，並登入要加入的帳號。建議使用無痕視窗，以免誤用其他已登入的帳號。
+3. 確認帳號：
+
+   ```sh
+   codex-workers account list --json
+   ```
+
+   `login_file` 為 `present_unverified` 只代表登入檔存在，不代表授權仍有效。實際派工成功，才能證明授權可用。其他值的意思見[疑難排解](#疑難排解)。
+
+### 2. 派工
+
+在主 agent 中呼叫 skill，後面接上你的任務與帳號。Claude Code 的寫法如下：
+
+```text
+/codex-workers 用 work 帳號檢查這個專案的 README，列出不清楚的段落。不要修改任何檔案。
+```
+
+在 Codex 中呼叫 skill 的方式，依你使用的 Codex 版本而定，請參考該版本的 skill 說明。
+
+skill 會依照下列流程操作：
+
+1. 檢查帳號與既有的 worker。
+2. 建立 worker、送出任務。多個 worker 可以同時進行。
+3. 追蹤進度，worker 完成後讀取本輪成果。
+4. 詢問你完成後要怎麼處理（見下方〈完成後選擇〉）。
+5. 依你的選擇執行，並檢查實際成果後，再整合各 worker 的結果。
+
+skill 不會自動關閉 pane。完成後要保留、壓縮或關閉，由你決定。
+
+### 完成後選擇
+
+每個 worker 完成一輪任務後，skill 會詢問你要怎麼處理：
+
+| 選擇 | 結果 |
+|---|---|
+| `keep` | 保留 pane，之後可以繼續追加任務或再次讀取。 |
+| `compact` | 送出 `/compact` 並保留 pane。這不算新任務。工具只確認指令已送出，請用 `read` 查看實際結果。 |
+| `close` | 關閉 pane。帳號的登入與對話歷史會保留。 |
+
+選擇只適用該輪任務。下一輪完成後，會取得新的 `completion_id`，需要重新選擇。
+
+### 注意事項
+
+- 同名 worker 在上一輪完成後可以追加任務。要在不同專案工作，請使用新的 worker 名稱，並指定 `--cwd`。
+- 多個 worker 寫入同一個目錄時，請在任務中明確分配各自負責的檔案。
+- 主 agent 重新啟動後，若原 pane 已不存在，派工會在建立 pane 前失敗。請在現有的 pane 中重新開啟主 agent。
+
+## 直接使用 CLI
+
+當你要除錯、手動操作，或沒有使用 skill 時，可以直接執行 CLI：
 
 ```sh
 codex-workers start work-review --account work --task 'Review this project and list potential bugs. Do not change files.'
@@ -93,21 +154,7 @@ codex-workers status work-review
 codex-workers finish work-review --completion-id <completion_id> --action close
 ```
 
-每個指令的作用如下：
-
-1. `start` 建立 pane、啟動 worker、送出任務，然後立即返回。它不會等待任務完成。
-2. `wait` 等待 worker 完成。逾時不會終止 worker。
-3. `read` 讀取 worker 目前的畫面。
-4. `status` 回傳目前狀態。worker 完成時，輸出會包含 `completion_id`。
-5. `finish` 依你的選擇處理已完成的 worker。`<completion_id>` 請填入 `status` 回傳的值。
-
-派工後可以再用 `prompt` 追加任務，但只有在上一輪完成後才能執行。
-
-要指定其他工作目錄，加上 `--cwd /path/to/project`。worker 會開在獨立的 sibling pane 中，主 pane 保持焦點，工具不會建立 worktree。多個 worker 寫入同一個目錄時，請明確分配各自負責的檔案。
-
-安裝 skill 後，也可以直接請主 agent 使用 `/codex-workers` 派工。它會依 [SKILL.md](skill/codex-workers/SKILL.md) 的流程操作，並在每輪完成時詢問你要保留、壓縮或關閉 worker。
-
-## 指令參考
+範例中的 `work` 與 `work-review` 是示意名稱，請換成你自己的。`<completion_id>` 請填入 `status` 在 worker 完成時回傳的值。
 
 | 指令 | 用途 |
 |---|---|
@@ -120,7 +167,7 @@ codex-workers finish work-review --completion-id <completion_id> --action close
 | `status <名稱>` | 回傳 JSON 狀態：`working`、`completed`、`blocked`、`unknown` 或 `closed`。 |
 | `wait <名稱> --timeout <秒>` | 等待 worker 完成。預設 120 秒。逾時不會終止 worker。 |
 | `read <名稱> --lines <n>` | 讀取近期畫面。預設 120 行。 |
-| `finish <名稱> --completion-id <id> --action keep\|compact\|close` | 處理已完成的 worker。見下方「完成後選擇」。 |
+| `finish <名稱> --completion-id <id> --action keep\|compact\|close` | 依你的選擇處理已完成的 worker。 |
 
 `start` 的選用參數：
 
@@ -140,18 +187,6 @@ codex-workers finish work-review --completion-id <completion_id> --action close
 | 2 | 參數錯誤 |
 
 代碼 3、4 與 124 都不代表任務已完成。
-
-## 完成後選擇
-
-worker 完成一輪任務後，你要選擇下一步：
-
-| 選擇 | 結果 |
-|---|---|
-| `keep` | 保留 pane，之後可以繼續追加任務或再次讀取。 |
-| `compact` | 送出 `/compact` 並保留 pane。這不算新任務。工具只確認指令已送出，請用 `read` 查看實際結果。 |
-| `close` | 關閉 pane。帳號的登入與對話歷史會保留。 |
-
-選擇只適用該輪任務。下一輪完成後，會取得新的 `completion_id`，需要重新選擇。
 
 ## 帳號管理
 
@@ -205,6 +240,9 @@ export CODEX_WORKERS_LANGUAGE_PROMPT=''                    # 不附加說明，�
 
 | 症狀或代碼 | 原因與處理 |
 |---|---|
+| `login_file: missing` | 沒有登入檔。執行 `codex-workers account add <別名>`。 |
+| `login_file: invalid_file` | 登入檔是空的或不是一般檔案。刪除該帳號後以同一別名重新 `add`。 |
+| `login_file: linked_file_rejected` | 登入檔是符號連結，工具拒絕使用。刪除後以同一別名重新 `add`。 |
 | `duplicate_name` | 名稱已被保留。請改用新名稱，或先用 `status` 檢查既有的 worker。 |
 | `login_missing` | 該帳號沒有登入檔。執行 `codex-workers account add <別名>`。 |
 | `not_in_herdr` | 指令不是在 Herdr pane 中執行。請在 Herdr pane 中執行。不要自行設定 `HERDR_ENV` 或 `HERDR_PANE_ID`。 |
@@ -228,7 +266,7 @@ python3 tests/e2e.py
 
 ## 更多文件
 
-- [skill/codex-workers/SKILL.md](skill/codex-workers/SKILL.md)：主 agent 使用的派工流程。
+- [skill/codex-workers/SKILL.md](skill/codex-workers/SKILL.md)：主 agent 使用的完整派工流程。
 - [skill/codex-workers/references/setup.md](skill/codex-workers/references/setup.md)：安裝與新增帳號的詳細步驟。
 
 ## 授權
