@@ -4,6 +4,12 @@
 
 > **English summary:** A CLI + agent skill that lets one main agent dispatch tasks to multiple Codex CLI workers inside Herdr panes, each running under its own separately logged-in account and `CODEX_HOME`. macOS only (tested). Docs are in Traditional Chinese; the worker language prompt is configurable via `CODEX_WORKERS_LANGUAGE_PROMPT`.
 
+## 介紹影片
+
+<video src="https://github.com/lostshin/codex-workers/raw/main/docs/intro.mp4" controls width="720"></video>
+
+若影片無法在頁面中播放，可以[直接開啟影片檔](docs/intro.mp4)。
+
 ## ⚠️ 使用前請先讀
 
 - **worker 預設以 `--yolo` 執行**：新 worker 會略過 Codex 的 sandbox 與核准提示，可以直接修改 `--cwd` 目錄中的檔案並執行指令。只在你信任任務內容、且專案有版本控制的情況下使用。
