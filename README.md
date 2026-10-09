@@ -6,9 +6,9 @@
 
 ## 介紹影片
 
-<video src="https://github.com/lostshin/codex-workers/raw/main/docs/intro.mp4" controls width="720"></video>
+![介紹影片：一個主 agent 指揮多個隔離帳號的 Codex worker](docs/intro.gif)
 
-若影片無法在頁面中播放，可以[直接開啟影片檔](docs/intro.mp4)。
+完整影片（畫質較好）：[docs/intro.mp4](docs/intro.mp4)。
 
 ## ⚠️ 使用前請先讀
 
