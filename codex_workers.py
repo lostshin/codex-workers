@@ -396,7 +396,8 @@ class Workers:
             raise Failure('invalid_cwd', '工作目錄不存在或不是目錄。')
         if os.environ.get('HERDR_ENV') != '1' or not os.environ.get('HERDR_PANE_ID'):
             raise Failure('not_in_herdr', '請在 Herdr pane 內執行；未建立 pane。')
-        with self.locked():
+        with contextlib.ExitStack() as held:
+            held.enter_context(self.locked())
             path = self.record_path(name)
             if path.exists():
                 previous = self.load(name)
@@ -430,6 +431,8 @@ class Workers:
                     args += ['--env', key + '=']
                 record['pane_id'] = self.herdr(*args)['pane']['pane_id']
                 self.save(record)
+                # The saved pane keeps the name and account in use; the slow startup runs without the lock.
+                held.close()
                 self.wait_for_shell(record['pane_id'], startup_timeout)
                 self.herdr('agent', 'start', name, '--kind', 'codex', '--pane', record['pane_id'],
                            '--timeout', str(int(startup_timeout * 1000)), '--', '--no-daemon', '--yolo',
@@ -490,7 +493,8 @@ class Workers:
     def finish(self, name, turn, action):
         if os.environ.get('HERDR_ENV') != '1' or not os.environ.get('HERDR_PANE_ID'):
             raise Failure('not_in_herdr', '請在 Herdr pane 內選擇完成後操作；未控制任何 session。')
-        with self.locked():
+        with contextlib.ExitStack() as held:
+            held.enter_context(self.locked())
             record = self.load(name)
             current = self.status(name)
             if current.get('reason') == 'pane_missing':
@@ -522,6 +526,8 @@ class Workers:
             record['phase'] = 'maintenance_unknown'
             self.save(record)
             if action == 'compact':
+                # maintenance_unknown rejects other operations on this worker while /compact settles unlocked.
+                held.close()
                 self.herdr('agent', 'prompt', record['pane_id'], '/compact', '--wait', '--timeout', '30000', timeout=35)
                 settled = self.identity(record)
                 if not settled.get('interactive_ready') or settled.get('agent_status') not in ('idle', 'done'):
@@ -586,8 +592,8 @@ def main(argv=None):
     finish.add_argument('name'); finish.add_argument('--completion-id', required=True)
     finish.add_argument('--action', choices=('keep', 'compact', 'close'), required=True)
     commands.add_parser('status', help='不把 idle 或 unknown 當完成').add_argument('name')
-    wait = commands.add_parser('wait', help='等待完成／blocked／unknown；逾時不終止代理')
-    wait.add_argument('name'); wait.add_argument('--timeout', type=positive, default=120)
+    wait = commands.add_parser('wait', help='等待完成／blocked／unknown；多個名稱時任一個結束就返回；逾時不終止代理')
+    wait.add_argument('name', nargs='+'); wait.add_argument('--timeout', type=positive, default=120)
     read = commands.add_parser('read', help='讀取近期結果，保留主 pane 焦點')
     read.add_argument('name'); read.add_argument('--lines', type=int, default=120)
     args = parser.parse_args(argv)
@@ -621,18 +627,26 @@ def main(argv=None):
         else:
             if os.environ.get('HERDR_ENV') != '1':
                 raise Failure('not_in_herdr', '請在 Herdr 內等待代理。')
+            codes = {'completed': 0, 'blocked': 3, 'unknown': 4, 'closed': 4}
+            names = list(dict.fromkeys(args.name))
             deadline = time.monotonic() + args.timeout
             while True:
-                result = workers.status(args.name)
-                if result['state'] in ('completed', 'blocked', 'unknown', 'closed'):
-                    code = {'completed': 0, 'blocked': 3, 'unknown': 4, 'closed': 4}[result['state']]
+                results = [workers.status(name) for name in names]
+                settled = [r for r in results if r['state'] in codes]
+                if settled:
+                    # The worst settled state wins, so 0 still means every settled worker completed.
+                    code = max(codes[r['state']] for r in settled)
                     break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    result = {**result, 'last_state': result['state'], 'state': 'timeout'}
                     code = 124
                     break
                 time.sleep(min(0.2, remaining))
+            if len(args.name) == 1:
+                result = results[0] if code != 124 else {**results[0], 'last_state': results[0]['state'], 'state': 'timeout'}
+            else:
+                result = {'state': 'timeout' if code == 124 else 'settled',
+                          'settled': [r['name'] for r in settled], 'workers': results}
         print(json.dumps(result, ensure_ascii=False))
         return code
     except Failure as error:

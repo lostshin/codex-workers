@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from pathlib import Path
@@ -68,23 +69,14 @@ SAFE_VALUE = "yes"
     def calls(self):
         p = self.root / 'calls.jsonl'
         return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
-
-
-
-
-
-
-
-
-
     def add(self, alias='alpha'):
         return self.run_cli('account', 'add', alias)
     def start(self, name='alpha', alias='alpha', **kw):
         return self.run_cli('start', name, '--account', alias, '--task', 'Anonymous task', **kw)
-    def finish(self, status='done', completion=2):
+    def finish(self, status='done', completion=2, name='alpha'):
         p = self.root / 'herdr.json'
         s = json.loads(p.read_text())
-        a = s['agents']['alpha']
+        a = s['agents'][name]
         a.update(agent_status=status, completion_seq=completion, state_change_seq=2)
         p.write_text(json.dumps(s))
     def test_two_accounts_sync_dispatch_continue_and_read(self):
@@ -187,6 +179,28 @@ SAFE_VALUE = "yes"
         self.assertEqual(self.run_cli('wait','alpha',code=4)['state'],'unknown')
         self.finish('idle',None)
         self.assertEqual(self.run_cli('wait','alpha','--timeout','0.05',code=124)['state'],'timeout')
+    def test_wait_for_several_workers_returns_when_any_settles(self):
+        self.add(); self.add('beta'); self.start(); self.start('beta', 'beta')
+        self.finish(name='beta')
+        result = self.run_cli('wait', 'alpha', 'beta', '--timeout', '5')
+        self.assertEqual(result['state'], 'settled')
+        self.assertEqual(result['settled'], ['beta'])
+        self.assertEqual([(w['name'], w['state']) for w in result['workers']], [('alpha', 'working'), ('beta', 'completed')])
+        self.assertTrue(result['workers'][1]['completion_prompt']['pending'])
+        self.assertEqual(self.run_cli('wait', 'beta', 'beta', '--timeout', '1')['settled'], ['beta'])
+    def test_wait_for_several_workers_reports_timeout_and_worst_state(self):
+        self.add(); self.add('beta'); self.start(); self.start('beta', 'beta')
+        result = self.run_cli('wait', 'alpha', 'beta', '--timeout', '0.05', code=124)
+        self.assertEqual((result['state'], result['settled']), ('timeout', []))
+        self.assertEqual([w['state'] for w in result['workers']], ['working', 'working'])
+        self.finish('blocked', None, name='alpha')
+        self.assertEqual(self.run_cli('wait', 'alpha', 'beta', code=3)['settled'], ['alpha'])
+        # A blocked or unknown worker is never hidden behind another worker's completion.
+        self.finish(name='beta')
+        self.assertEqual(self.run_cli('wait', 'beta', 'alpha', code=3)['settled'], ['beta', 'alpha'])
+        self.finish('unknown', None, name='alpha')
+        self.assertEqual(self.run_cli('wait', 'beta', 'alpha', code=4)['settled'], ['beta', 'alpha'])
+        self.run_cli('wait', 'alpha', 'ghost', code=1)
     def test_busy_followup_is_rejected(self):
         self.add(); self.start()
         self.run_cli('prompt','alpha','Follow up',code=1)
@@ -632,12 +646,66 @@ SAFE_VALUE = "yes"
         self.assertEqual(self.aliases(), ['alpha', 'beta'])
         self.assertEqual(self.record('alpha')['account'], 'alpha')
 
+    def background(self, *args, extra=None):
+        return subprocess.Popen([sys.executable, str(CLI), *args], env=self.env | (extra or {}),
+                                cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def until(self, check, timeout=5):
+        deadline = time.monotonic() + timeout
+        while not check():
+            self.assertLess(time.monotonic(), deadline, 'condition not reached')
+            time.sleep(0.05)
+
+    def test_slow_start_does_not_block_other_workers_or_release_its_account(self):
+        self.add(); self.add('beta')
+        slow = self.background('start', 'alpha', '--account', 'alpha', '--task', 'Anonymous task',
+                               '--startup-timeout', '8', extra={'FAKE_SHELL_BUSY': '1'})
+        path = self.data / 'workers' / 'alpha.json'
+        self.until(lambda: path.is_file() and self.record('alpha').get('pane_id'))
+        self.start('beta', 'beta')
+        for args, error in ((('account', 'remove', 'alpha'), 'account_in_use'),
+                            (('account', 'rename', 'alpha', 'gamma'), 'account_in_use'),
+                            (('prompt', 'alpha', 'Follow up'), 'worker_not_settled'),
+                            (('start', 'alpha', '--account', 'alpha', '--task', 'Again'), 'duplicate_name')):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_cli(*args, code=1)['error']['code'], error)
+        # Every check above finished while the first start was still waiting for its shell.
+        self.assertIsNone(slow.poll())
+        out, _ = slow.communicate(timeout=10)
+        self.assertEqual(json.loads(out)['error']['code'], 'shell_not_ready')
+        self.assertEqual(self.record('alpha')['phase'], 'startup_failed')
+        self.assertEqual(self.record('beta')['phase'], 'submitted')
+        self.assertEqual(self.aliases(), ['alpha', 'beta'])
+        starts = [c['args'][2] for c in self.calls() if c['args'][:2] == ['agent', 'start']]
+        self.assertEqual(starts, ['beta'])
+
+    def test_slow_compact_does_not_block_other_workers_or_repeat(self):
+        self.add(); self.add('beta'); self.start(); self.start('beta', 'beta')
+        self.finish(); self.finish(name='beta')
+        turn = self.run_cli('status', 'alpha')['completion_id']
+        slow = self.background('finish', 'alpha', '--completion-id', turn, '--action', 'compact',
+                               extra={'FAKE_PROMPT_DELAY': '3'})
+        self.until(lambda: self.record('alpha')['phase'] == 'maintenance_unknown')
+        self.run_cli('prompt', 'beta', 'Follow up')
+        for args, error in ((('finish', 'alpha', '--completion-id', turn, '--action', 'compact'), 'worker_not_settled'),
+                            (('prompt', 'alpha', 'Follow up'), 'worker_not_settled'),
+                            (('account', 'remove', 'alpha'), 'account_in_use')):
+            with self.subTest(args=args):
+                self.assertEqual(self.run_cli(*args, code=1)['error']['code'], error)
+        self.assertIsNone(slow.poll())
+        out, _ = slow.communicate(timeout=10)
+        self.assertEqual(json.loads(out)['state'], 'compact_submitted')
+        self.assertEqual(self.record('alpha')['phase'], 'submitted')
+        prompts = [c['args'][2:4] for c in self.calls() if c['args'][:2] == ['agent', 'prompt']]
+        self.assertEqual(sum(a[1] == '/compact' for a in prompts), 1)
+
 if __name__ == '__main__':
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(Workflow)
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    # Arguments select tests (Workflow.test_x or -k x); the artifact records them so a partial run is visible.
+    result = unittest.main(argv=sys.argv, exit=False, verbosity=2).result
     artifact = {'fixture': 'anonymous fake CLI only', 'tests': result.testsRun,
                 'failures': len(result.failures), 'errors': len(result.errors),
-                'passed': result.wasSuccessful(), 'rerun': 'python3 tests/e2e.py'}
+                'passed': result.wasSuccessful(), 'argv': sys.argv[1:],
+                'rerun': ' '.join(['python3 tests/e2e.py', *sys.argv[1:]])}
     (PROJECT/'evidence').mkdir(exist_ok=True)
     (PROJECT/'evidence'/'e2e.json').write_text(json.dumps(artifact,indent=2)+'\n')
     sys.exit(0 if result.wasSuccessful() else 1)

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Anonymous Codex/Herdr processes used by the CLI integration tests."""
+import fcntl
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 args = sys.argv[1:]
@@ -31,9 +33,14 @@ if Path(sys.argv[0]).name == 'codex':
         fail('unexpected_codex_command')
     sys.exit(0)
 
+command = args[:2]
+if command == ['agent', 'prompt'] and os.environ.get('FAKE_PROMPT_DELAY'):
+    time.sleep(float(os.environ['FAKE_PROMPT_DELAY']))
+# Concurrent CLI processes must not lose each other's state updates.
+lock = os.open(root / 'herdr.lock', os.O_CREAT | os.O_RDWR)
+fcntl.flock(lock, fcntl.LOCK_EX)
 state_path = root / 'herdr.json'
 state = json.loads(state_path.read_text()) if state_path.exists() else {'agents': {}, 'panes': {}, 'next': 1}
-command = args[:2]
 if command == ['agent', 'list']:
     reply({'agents': list(state['agents'].values())})
 elif command == ['pane', 'layout']:
