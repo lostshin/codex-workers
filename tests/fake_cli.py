@@ -13,7 +13,8 @@ log = root / 'calls.jsonl'
 with log.open('a') as stream:
     stream.write(json.dumps({'cli': Path(sys.argv[0]).name, 'args': args,
                              'home': os.environ.get('CODEX_HOME'),
-                             'api_key': os.environ.get('OPENAI_API_KEY')}) + '\n')
+                             'api_key': os.environ.get('OPENAI_API_KEY'),
+                             'provider_key': os.environ.get('FIXTURE_PROVIDER_KEY')}) + '\n')
 
 def reply(result):
     print(json.dumps({'id': 'fixture', 'result': result}))

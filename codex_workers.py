@@ -180,9 +180,22 @@ def sync_settings(source, home):
     return {'withheld_fields': sorted(set(warnings)),
             'tool_authorization': '外部工具可能需在此帳號另行授權；未複製連線與 OAuth 資料。'}
 
+def auth_env(home):
+    # A custom model provider's env_key names an API key the worker could use instead of its own login.
+    names = set(AUTH_ENV)
+    for config in [home / 'config.toml', *sorted(home.glob('*.config.toml'))]:
+        if not config.is_file():
+            continue
+        providers = tomllib.loads(config.read_text()).get('model_providers')
+        for provider in providers.values() if isinstance(providers, dict) else ():
+            key = provider.get('env_key') if isinstance(provider, dict) else None
+            if isinstance(key, str) and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+                names.add(key)
+    return sorted(names)
+
 def isolated_env(home):
     env = dict(os.environ, CODEX_HOME=str(home))
-    for name in AUTH_ENV:
+    for name in auth_env(home):
         env.pop(name, None)
     return env
 
@@ -427,7 +440,7 @@ class Workers:
                 args = ['pane', 'split', '--current', '--direction', direction, '--cwd', str(cwd),
                         '--env', 'CODEX_HOME=' + str(home), '--no-focus']
                 # Empty overrides prevent inherited API credentials selecting another account.
-                for key in AUTH_ENV:
+                for key in auth_env(home):
                     args += ['--env', key + '=']
                 record['pane_id'] = self.herdr(*args)['pane']['pane_id']
                 self.save(record)

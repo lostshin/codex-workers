@@ -255,6 +255,23 @@ SAFE_VALUE = "yes"
         self.snapshot['config.toml']=p.read_bytes()
         self.add()
         self.assertNotIn('fixture-secret',(self.data/'accounts/alpha/config.toml').read_text())
+    def test_custom_provider_api_key_environment_is_never_inherited(self):
+        # A provider env_key would let a worker fall back from its own login to an inherited API key.
+        (self.source / 'config.toml').write_text((self.source / 'config.toml').read_text()
+                                                  + '[model_providers.custom]\nenv_key = "FIXTURE_PROVIDER_KEY"\n')
+        (self.source / 'deep.config.toml').write_text((self.source / 'deep.config.toml').read_text()
+                                                       + '[model_providers.other]\nenv_key = "FIXTURE_OTHER_KEY"\n'
+                                                       + '[model_providers.bad]\nenv_key = "BAD KEY=x"\n')
+        self.snapshot = {str(p.relative_to(self.source)): p.read_bytes() for p in self.source.rglob('*') if p.is_file()}
+        self.env |= {'FIXTURE_PROVIDER_KEY': 'fixture-secret', 'FIXTURE_OTHER_KEY': 'fixture-secret'}
+        self.add(); self.start()
+        config = tomllib.loads((self.data / 'accounts/alpha/config.toml').read_text())
+        self.assertEqual(config['model_providers']['custom']['env_key'], 'FIXTURE_PROVIDER_KEY')
+        self.assertTrue(all(c['provider_key'] is None for c in self.calls() if c['cli'] == 'codex'))
+        split = next(c['args'] for c in self.calls() if c['args'][:2] == ['pane', 'split'])
+        for key in ('FIXTURE_PROVIDER_KEY', 'FIXTURE_OTHER_KEY', 'OPENAI_API_KEY'):
+            self.assertIn(key + '=', split)
+        self.assertFalse(any(a.startswith('BAD KEY') for a in split))
 
 
 
