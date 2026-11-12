@@ -91,6 +91,7 @@ elif command == ['agent', 'start']:
     agent = {'name': name, 'pane_id': pane, 'agent': 'codex', 'agent_status': 'idle',
              'cwd': state['panes'][pane]['cwd'], 'interactive_ready': True, 'state_change_seq': 0, 'completion_seq': None}
     state['agents'][name] = agent
+    state['screen'] = os.environ.get('FAKE_START_SCREEN', 'Anonymous fixture result\n› Ask Codex to do anything')
     reply({'agent': agent})
 elif command == ['agent', 'get']:
     agent = next((a for a in state['agents'].values() if a['pane_id'] == args[2]), None)
@@ -113,6 +114,9 @@ elif command == ['agent', 'prompt']:
 elif command == ['agent', 'read']:
     if os.environ.get('FAKE_READ_FAIL'):
         fail('read_failed')
+    state['reads'] = state.get('reads', 0) + 1
+    if os.environ.get('FAKE_SCREEN_AFTER_FLASH') and state['reads'] > 1:
+        state['screen'] = os.environ['FAKE_SCREEN_AFTER_FLASH']
     lines = state.get('screen', 'Anonymous fixture result').split('\n')
     if '--lines' in args:
         lines = lines[-int(args[args.index('--lines') + 1]):]

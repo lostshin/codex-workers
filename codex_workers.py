@@ -18,6 +18,8 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 NAME = re.compile(r'[a-z][a-z0-9_-]{0,31}\Z')
+HOOK_DIALOG = re.compile(r'Hooks need review|[Tt]rust all')
+COMPOSER = 'Ask Codex to do anything'
 LANGUAGE_INSTRUCTIONS = ('協作語言：派工、追加任務、進度、交接及成果回報一律使用台灣繁體中文與台灣慣用詞彙。'
                          '程式碼、指令、識別字、路徑及必要原文保留原樣；即使任務原文是英文，說明仍使用台灣繁體中文。\n\n任務內容：\n')
 
@@ -147,6 +149,11 @@ def sync_settings(source, home):
         stage = Path(temporary)
         for config in [source / 'config.toml', *sorted(source.glob('*.config.toml'))]:
             values = clean_config(tomllib.loads(config.read_text()), warnings, config.name + ':')
+            destination = home / config.name
+            if destination.is_file():
+                state = tomllib.loads(destination.read_text()).get('hooks', {}).get('state', {})
+                if state:
+                    values.setdefault('hooks', {}).setdefault('state', {}).update(state)
             values['cli_auth_credentials_store'] = 'file'
             values['mcp_oauth_credentials_store'] = 'file'
             text = '\n'.join(atom(k) + ' = ' + atom(v) for k, v in values.items()) + '\n'
@@ -198,6 +205,20 @@ def isolated_env(home):
     for name in auth_env(home):
         env.pop(name, None)
     return env
+
+def supported_codex(home):
+    for directory in dict.fromkeys(os.get_exec_path()):
+        executable = shutil.which('codex', path=directory or '.')
+        if executable is None:
+            continue
+        try:
+            result = subprocess.run([executable, '--help'], capture_output=True, text=True,
+                                    env=isolated_env(home), timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0 and '--no-daemon' in result.stdout:
+            return Path(executable).absolute()
+    raise Failure('unsupported_codex', 'PATH 中找不到支援 --no-daemon 的 Codex。')
 
 def auth_status(home):
     auth = home / 'auth.json'
@@ -277,8 +298,9 @@ class Workers:
             private_dir(home.parent)
             private_dir(home)
             report = sync_settings(self.source, home)
+            executable = supported_codex(home)
             # Keep official interactive/device login on the caller's terminal.
-            result = subprocess.run(['codex', '--no-daemon', '-c', 'cli_auth_credentials_store="file"',
+            result = subprocess.run([str(executable), '--no-daemon', '-c', 'cli_auth_credentials_store="file"',
                                      'login', '--device-auth'], env=isolated_env(home))
             if result.returncode or auth_status(home) != 'present_unverified':
                 raise Failure('login_failed', '官方登入未完成；可用相同 alias 重試，不會借用其他帳號。')
@@ -372,6 +394,29 @@ class Workers:
         text = self.herdr('agent', 'read', record['pane_id'], '--source', 'recent-unwrapped', '--lines', '20')['read']['text']
         return re.search(r'Working \(.*esc to interrupt', text) is not None
 
+    def wait_for_composer(self, record, timeout, stable):
+        # interactive_ready can be true behind a startup dialog, which would swallow the task.
+        # Codex also shows its composer briefly before that dialog, so it has to stay on screen.
+        deadline = time.monotonic() + timeout
+        since = None
+        while True:
+            text = self.herdr('agent', 'read', record['pane_id'], '--source', 'recent-unwrapped', '--lines', '20')['read']['text']
+            dialog = HOOK_DIALOG.search(text)
+            if COMPOSER in text and not dialog:
+                since = time.monotonic() if since is None else since
+                if time.monotonic() - since >= stable:
+                    return
+            else:
+                since = None
+            if dialog or (since is None and time.monotonic() >= deadline):
+                # The task is certainly unsent, so prompt may deliver it once the screen clears.
+                record['phase'] = 'startup_blocked'
+                self.save(record)
+                if dialog:
+                    raise Failure('startup_dialog', f'Codex 正等待使用者處理 hook 審核對話框，任務未送出。請使用者到 pane {record["pane_id"]} 處理後，再用 prompt 送出任務。')
+                raise Failure('agent_not_ready', f'畫面未出現 Codex 輸入框，任務未送出。請檢查 pane {record["pane_id"]}，就緒後用 prompt 送出任務。')
+            time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+
     def wait_for_shell(self, pane_id, timeout):
         deadline = time.monotonic() + timeout
         while True:
@@ -416,17 +461,15 @@ class Workers:
                 previous = self.load(name)
                 # A failed start whose pane Herdr no longer has cannot still hold the name.
                 if previous['phase'] != 'closed' and not (
-                        previous['phase'] == 'startup_failed' and self.pane_missing(previous.get('pane_id'))):
+                        previous['phase'] in ('startup_failed', 'startup_blocked')
+                        and self.pane_missing(previous.get('pane_id'))):
                     raise Failure('duplicate_name', '名稱已保留；請使用新名稱，或先檢查既有代理。')
             home = self.home(alias)
             if auth_status(home) != 'present_unverified':
                 raise Failure('login_missing', f'請先執行 codex-workers account add {alias}。')
             if any(a.get('name') == name for a in self.herdr('agent', 'list')['agents']):
                 raise Failure('duplicate_name', 'Herdr 中已有同名代理。')
-            help_result = subprocess.run(['codex', '--help'], capture_output=True, text=True,
-                                         env=isolated_env(home), timeout=10)
-            if help_result.returncode or '--no-daemon' not in help_result.stdout:
-                raise Failure('unsupported_codex', '本機 Codex 必須支援 --no-daemon。')
+            executable = supported_codex(home)
             report = sync_settings(self.source, home)
             if direction is None:
                 layout = self.herdr('pane', 'layout', '--current')['layout']
@@ -438,7 +481,9 @@ class Workers:
             self.save(record)
             try:
                 args = ['pane', 'split', '--current', '--direction', direction, '--cwd', str(cwd),
-                        '--env', 'CODEX_HOME=' + str(home), '--no-focus']
+                        '--env', 'CODEX_HOME=' + str(home),
+                        '--env', 'PATH=' + str(executable.parent) + os.pathsep + os.environ.get('PATH', ''),
+                        '--no-focus']
                 # Empty overrides prevent inherited API credentials selecting another account.
                 for key in auth_env(home):
                     args += ['--env', key + '=']
@@ -455,6 +500,8 @@ class Workers:
                 agent = self.identity(record)
                 if not agent.get('interactive_ready') or agent['agent_status'] not in ('idle', 'done'):
                     raise Failure('agent_not_ready', '代理尚未就緒；未送出任務，請檢查 pane。')
+                stable = float(os.environ.get('CODEX_WORKERS_COMPOSER_STABLE', 5))
+                self.wait_for_composer(record, startup_timeout, stable)
                 return {**self.submit(record, task, agent), **report}
             except (Failure, OSError, subprocess.TimeoutExpired, KeyError, StopIteration):
                 if record['phase'] == 'starting':
@@ -561,11 +608,14 @@ class Workers:
             raise Failure('empty_task', '任務不可空白。')
         with self.locked():
             record = self.load(name)
-            if record['phase'] != 'submitted' or self.status(name)['state'] != 'completed':
+            first_task = record['phase'] == 'startup_blocked'
+            if not first_task and (record['phase'] != 'submitted' or self.status(name)['state'] != 'completed'):
                 raise Failure('worker_not_settled', '請先 wait/read 確認上一輪完成；忙碌、blocked 或未知狀態不追加任務。')
             agent = self.identity(record)
             if not agent.get('interactive_ready') or agent.get('agent_status') not in ('idle', 'done'):
                 raise Failure('agent_not_ready', '代理尚未就緒；未送出追加任務，請檢查 pane。')
+            if first_task:
+                self.wait_for_composer(record, 0, 0)
             return self.submit(record, task, agent)
 
     def read(self, name, lines):
@@ -598,7 +648,7 @@ def main(argv=None):
     start.add_argument('name'); start.add_argument('--account', required=True)
     start.add_argument('--cwd', default=os.getcwd()); start.add_argument('--task', required=True)
     start.add_argument('--direction', choices=('right', 'down'))
-    start.add_argument('--startup-timeout', type=positive, default=30)
+    start.add_argument('--startup-timeout', type=positive, default=90)
     prompt = commands.add_parser('prompt', help='上一輪完成後追加任務')
     prompt.add_argument('name'); prompt.add_argument('text')
     finish = commands.add_parser('finish', help='依使用者選擇保留、壓縮或關閉已完成的 worker')

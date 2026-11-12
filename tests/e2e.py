@@ -52,6 +52,7 @@ SAFE_VALUE = "yes"
         for name in ('auth.json', 'history.jsonl', 'state.sqlite', 'mcp_auth.json'):
             (self.source / name).write_text('fixture-secret')
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ['PATH'],
+                        CODEX_WORKERS_COMPOSER_STABLE='0',
                         CODEX_WORKERS_HOME=str(self.data), CODEX_WORKERS_SOURCE=str(self.source),
                         FAKE_ROOT=str(self.root), HERDR_ENV='1', HERDR_PANE_ID='fixture:p0',
                         OPENAI_API_KEY='fixture-secret')
@@ -71,8 +72,8 @@ SAFE_VALUE = "yes"
         return [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
     def add(self, alias='alpha'):
         return self.run_cli('account', 'add', alias)
-    def start(self, name='alpha', alias='alpha', **kw):
-        return self.run_cli('start', name, '--account', alias, '--task', 'Anonymous task', **kw)
+    def start(self, name='alpha', alias='alpha', *flags, **kw):
+        return self.run_cli('start', name, '--account', alias, '--task', 'Anonymous task', *flags, **kw)
     def finish(self, status='done', completion=2, name='alpha'):
         p = self.root / 'herdr.json'
         s = json.loads(p.read_text())
@@ -128,6 +129,21 @@ SAFE_VALUE = "yes"
         self.start(code=1, extra={'HERDR_ENV': ''})
         self.assertFalse(any(c['cli'] == 'herdr' for c in self.calls()))
 
+    def test_supported_codex_after_older_version_is_used_for_login_and_start(self):
+        legacy_bin = self.root / 'legacy-bin'
+        legacy_bin.mkdir()
+        legacy = legacy_bin / 'codex'
+        legacy.write_text('#!/bin/sh\nif [ "$1" = "--help" ]; then echo "old codex"; exit 0; fi\nexit 1\n')
+        legacy.chmod(0o755)
+        self.env['PATH'] = str(legacy_bin) + os.pathsep + self.env['PATH']
+        self.add()
+        self.start()
+        calls = [call for call in self.calls() if call['cli'] == 'codex']
+        self.assertTrue(any('login' in call['args'] for call in calls))
+        split = next(call['args'] for call in self.calls() if call['args'][:2] == ['pane', 'split'])
+        self.assertIn('PATH=' + str(self.bin) + os.pathsep + self.env['PATH'], split)
+        self.assertEqual(self.run_cli('status', 'alpha')['state'], 'working')
+
     def test_public_token_limits_sync_without_importing_nested_credentials(self):
         limits = {'model_context_window': 1000000, 'model_auto_compact_token_limit': 900000,
                   'model_auto_compact_token_limit_scope': 'total', 'tool_output_token_limit': 12000}
@@ -143,6 +159,38 @@ SAFE_VALUE = "yes"
         self.assertNotIn('OPENAI_API_KEY', worker['shell_environment_policy']['set'])
         self.assertNotIn('model_auto_compact_token_limit', worker['shell_environment_policy']['set'])
         self.assertNotIn('fixture-secret', (self.data / 'accounts/alpha/config.toml').read_text())
+
+    def test_worker_hook_decisions_survive_repeated_sync_and_stay_account_local(self):
+        for filename in ('config.toml', 'deep.config.toml'):
+            config = self.source / filename
+            config.write_text(config.read_text()
+                              + '[hooks.state."fixture@plugins:hooks/hooks.json:session_start:0:0"]\n'
+                              + 'trusted_hash = "sha256:main"\nenabled = true\n'
+                              + '[hooks.state."fixture@plugins:hooks/hooks.json:stop:0:0"]\n'
+                              + 'trusted_hash = "sha256:main-stop"\n')
+            self.snapshot[filename] = config.read_bytes()
+        self.add(); self.add('beta')
+        worker_home = self.data / 'accounts/alpha'
+        expected = {}
+        for filename in ('config.toml', 'deep.config.toml'):
+            config = worker_home / filename
+            config.write_text('model = "worker-only-model"\n'
+                              '[hooks.state."fixture@plugins:hooks/hooks.json:session_start:0:0"]\n'
+                              'trusted_hash = "sha256:worker"\ntrusted_content_hash = "sha256:reviewed"\n'
+                              'enabled = false\n'
+                              '[hooks.state."worker@plugins:hooks/hooks.json:stop:0:0"]\n'
+                              'trusted_hash = "sha256:worker-only"\nenabled = true\n')
+            expected[filename] = tomllib.loads(config.read_text())['hooks']['state'] | {
+                'fixture@plugins:hooks/hooks.json:stop:0:0': {'trusted_hash': 'sha256:main-stop'}}
+        self.start()
+        self.start('alpha-second')
+        for filename in ('config.toml', 'deep.config.toml'):
+            worker = tomllib.loads((worker_home / filename).read_text())
+            source = tomllib.loads((self.source / filename).read_text())
+            self.assertEqual(worker['hooks']['state'], expected[filename])
+            self.assertEqual(worker['model'], source['model'])
+            other = tomllib.loads((self.data / 'accounts/beta' / filename).read_text())
+            self.assertEqual(other['hooks']['state'], source['hooks']['state'])
 
     def test_duplicate_login_missing_and_invalid_cwd_before_split(self):
         self.add(); self.start()
@@ -160,6 +208,49 @@ SAFE_VALUE = "yes"
         self.add(); self.start(code=1,extra={'FAKE_START_FAIL':'1'})
         self.start(code=1)
         self.assertFalse(any(c['args'][:2] == ['agent','prompt'] for c in self.calls()))
+    def prompts(self):
+        return sum(c['args'][:2] == ['agent', 'prompt'] for c in self.calls())
+    def test_hook_dialog_keeps_task_unsent_until_the_user_clears_it(self):
+        dialog = 'Hooks need review\n3 hooks are new or changed.\n› 2. Trust all and continue'
+        self.add()
+        error = self.start(code=1, extra={'FAKE_START_SCREEN': dialog})['error']
+        self.assertEqual(error['code'], 'startup_dialog')
+        self.assertEqual(self.prompts(), 0)
+        self.assertEqual(self.run_cli('status', 'alpha')['reason'], 'startup_blocked')
+        self.assertEqual(self.run_cli('prompt', 'alpha', 'Anonymous task', code=1)['error']['code'], 'startup_dialog')
+        self.assertEqual(self.prompts(), 0)
+        self.herdr_state(lambda state: state.update(screen='› Ask Codex to do anything'))
+        self.assertEqual(self.run_cli('prompt', 'alpha', 'Anonymous task')['state'], 'submitted')
+        self.assertEqual(self.prompts(), 1)
+        self.assertEqual(self.run_cli('status', 'alpha')['state'], 'working')
+    def test_older_hook_dialog_is_recognised(self):
+        self.add()
+        screen = 'SessionStart 0/2 !\nt trust all · enter review · esc close\n› Ask Codex to do anything'
+        error = self.start(code=1, extra={'FAKE_START_SCREEN': screen})['error']
+        self.assertEqual(error['code'], 'startup_dialog')
+        self.assertEqual(self.prompts(), 0)
+    def test_composer_that_flashes_before_a_dialog_gets_no_task(self):
+        self.add()
+        error = self.start(code=1, extra={'FAKE_SCREEN_AFTER_FLASH': 'Hooks need review',
+                                          'CODEX_WORKERS_COMPOSER_STABLE': '0.5'})['error']
+        self.assertEqual(error['code'], 'startup_dialog')
+        self.assertEqual(self.prompts(), 0)
+    def test_task_is_not_sent_until_the_composer_is_on_screen(self):
+        self.add()
+        error = self.start('alpha', 'alpha', '--startup-timeout', '0.2', code=1, extra={'FAKE_START_SCREEN': 'Loading'})['error']
+        self.assertEqual(error['code'], 'agent_not_ready')
+        self.assertEqual(self.prompts(), 0)
+        self.assertEqual(self.run_cli('status', 'alpha')['reason'], 'startup_blocked')
+        self.herdr_state(lambda state: state.update(screen='› Ask Codex to do anything'))
+        self.assertEqual(self.run_cli('prompt', 'alpha', 'Anonymous task')['state'], 'submitted')
+        self.assertEqual(self.prompts(), 1)
+    def test_blocked_start_releases_name_once_its_pane_is_gone(self):
+        self.add()
+        self.start(code=1, extra={'FAKE_START_SCREEN': 'Hooks need review'})
+        self.assertEqual(self.start(code=1)['error']['code'], 'duplicate_name')
+        self.vanish()
+        self.start()
+        self.assertEqual(self.run_cli('status', 'alpha')['state'], 'working')
     def test_prompt_failure_is_uncertain_and_never_resent(self):
         self.add(); self.start(code=1,extra={'FAKE_PROMPT_FAIL':'1'})
         self.run_cli('prompt','alpha','retry',code=1)

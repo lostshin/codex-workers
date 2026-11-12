@@ -19,12 +19,14 @@ description: 由單一主 agent 指揮不同帳號的 Codex worker，在 Herdr �
 ```sh
 command -v codex-workers >/dev/null && echo "codex-workers: ok" || echo "codex-workers: missing"
 python3 -c 'import sys; print("python3:", "ok" if sys.version_info >= (3, 11) else "too old")'
-command -v codex >/dev/null && codex --help 2>&1 | grep -q -- '--no-daemon' && echo "codex: ok" || echo "codex: missing or unsupported"
+command -v codex >/dev/null && echo "codex: ok" || echo "codex: missing"
 command -v herdr >/dev/null && echo "herdr: ok" || echo "herdr: missing"
 [ "$HERDR_ENV" = 1 ] && [ -n "$HERDR_PANE_ID" ] && echo "herdr pane: ok" || echo "herdr pane: not detected"
 ```
 
 任一項不是 `ok` 就停止派工，告訴使用者缺少什麼，並依 [references/setup.md](references/setup.md) 列出安裝指令。安裝屬於系統變更：取得同意後再執行，或請使用者自己執行；不自選其他安裝來源。`herdr pane` 未偵測到時，請使用者在 Herdr 的 pane 中啟動主 agent；不可手動設定 `HERDR_ENV` 或 `HERDR_PANE_ID`。
+
+`account add` 與 `start` 會依 PATH 順序選用第一個支援 `--no-daemon` 的 Codex，避免前面的舊版擋住後面的可用版本。找不到時回 `unsupported_codex`，依 setup.md 處理，不改用共享 daemon。
 
 ## 帳號與命名
 
@@ -44,6 +46,8 @@ command -v herdr >/dev/null && echo "herdr: ok" || echo "herdr: missing"
    ```
 
    省略 `--cwd` 會沿用呼叫端目錄。`start` 預設以 `codex --no-daemon --yolo` 啟動，略過該 worker 的 sandbox 與核准提示，不需另加參數。就緒後只送一次並返回。多個 `start` 可同時執行，等待就緒期間不會擋住其他 worker 的派工、追加或完成後操作；逐一檢查每個回傳。啟動失敗會留下 `startup_failed`：Herdr 確認 pane 已不存在時釋放名稱、可同名重試；否則回 `duplicate_name`，先檢查該 pane 或改用新名稱。
+
+   每次同步會保留各帳號自己的 hook 信任與停用紀錄，包含獨立 profile 設定檔；相同 hook 不需每次重新信任。新增或變更的 hook 仍由使用者審核。若回 `startup_dialog`，任務尚未送出，紀錄為 `startup_blocked`；請使用者在該 pane 處理，再用 `prompt` 送出原任務，不操作信任選單或繞過審核。細節見 operations.md「Hook 信任與啟動對話框」。
 4. 追蹤與收取結果：
 
    ```sh

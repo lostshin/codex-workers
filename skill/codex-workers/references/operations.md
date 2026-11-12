@@ -26,6 +26,13 @@
 
 主 skill 更新不代表既有帳號的 skill 副本或已載入的指引已更新。使用者授權修正既有 workers 的 skills 時，只同步指定 skill，不整包同步設定。取得有效 Herdr context 並確認 worker 已完成後，用 `codex-workers prompt` 請它重新讀取 `$CODEX_HOME/skills/codex-workers/SKILL.md`；該輪仍須收取成果並詢問完成後選擇，不以檔案同步當作真實派工驗收。
 
+## Hook 信任與啟動對話框
+
+- `start` 同步主設定時，會合併 worker 現有的 `hooks.state`；同一個 hook 以 worker 的完整紀錄為準，保留信任 hash、內容 hash 與停用選擇。`config.toml` 與各個 `*.config.toml` 分別處理，不把 worker 的選擇寫回主設定或其他帳號。
+- Codex 仍會比對目前的 hook 定義；hook 新增、內容或指令變更時，仍可能需要使用者審核。不要加 `--dangerously-bypass-hook-trust`，也不代按「Trust all」。
+- CLI 會等待輸入框穩定顯示，避免啟動對話框吃掉任務。`startup_dialog` 表示 hook 審核擋住啟動；`agent_not_ready` 表示尚未顯示輸入框。兩者在此階段都保留 `startup_blocked`，任務尚未送出。使用者處理後，用 `codex-workers prompt "$worker_name" "$task"` 送出原任務；對話框未清除時仍拒絕送出。
+- `start` 預設啟動等待為 90 秒，可用 `--startup-timeout` 調整。這不會自動信任 hook；不要刪除帳號或紀錄來排除啟動問題。
+
 ## 授權與隔離
 
 - 不讀出 token，也不複製主 `auth.json`。每個帳號的 refresh token 由該帳號的 Codex 自行管理。
